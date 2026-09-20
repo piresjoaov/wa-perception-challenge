@@ -1,143 +1,113 @@
-# Computer Vision Challenge: Ego-Trajectory & Bird’s-Eye View Mapping  
+# WA Perception Challenge: Ego Trajectory Estimation in Bird’s-Eye View
 
----
-## Problem Overview
-You are given a short **10-second video** recorded from an **ego-vehicle** (our Autonomous Car with a front-facing stereo camera). The scene includes:  
+This repository contains a Python solution for the Wisconsin Autonomous Perception Challenge: estimating the ego-vehicle trajectory from a traffic light observation, using the traffic light as the world reference and rendering the result in a bird’s-eye view (BEV).
 
-- A traffic light (fixed, overhead)  
-- Several static barrels  
-- A moving golf cart ahead of us  
-- Occasionally, pedestrians  
+## What the application does
 
-Your task is to estimate and visualize the **ego-vehicle’s trajectory in the ground frame**, using the traffic light as a world reference.
-You may then extend your solution by tracking additional objects and rendering a richer **Bird’s-Eye View (BEV)**.  
+The program in `main.py` implements the following workflow:
 
-Use any tools you like — chatGPT and other assistants are highly encouraged. Please **do not** flood our e-mails with simple questions. GenAI is you friend.  
+1. Reads traffic-light bounding boxes from the CSV file.
+   - Expected columns: `frame_id, x_min, y_min, x_max, y_max`
+   - It normalizes them to `frame, x1, y1, x2, y2`.
 
-<img src="WA Challenge.gif" width="500"> 
+2. Computes the traffic-light center in each frame.
+   - The center of the box is treated as the pixel location of the traffic light.
 
----
-## Part A (Expected)
+3. Loads the corresponding 3D point cloud (`.npz`) for each frame.
+   - It supports files named like:
+     - `frame_0001.npz`
+     - `frame_0000.npz`
+     - `depth000001.npz`
+   - It looks for the `points` key or `xyz` key, or falls back to the first available array.
 
-1. **Traffic Light Tracking**  
-   - You are provided with a CSV file containing the bounding box of the traffic light in each frame:  
-     ```
-     frame_id, x_min, y_min, x_max, y_max
-     ```
-   - Use the bounding box center (u, v) as the pixel location of the traffic light. Alternatively, you could look into averging depth of a patch around the center for better noise sensitivity.   
+4. Extracts the 3D position of the traffic light in camera coordinates.
+   - It takes a small patch around the bounding-box center (default: 5x5 pixels).
+   - It removes invalid depth values and computes the mean valid 3D point `(X, Y, Z)` in camera space.
 
-2. **3D Position from Depth Data**  
-   - Each frame has a `.npz` file containing a 3D array of shape `(H, W, 3)`.  
-   - This array encodes the point cloud in camera coordinates (meters).  
-   - Camera coordinate system:  
-     - +X → forward (aligned with car heading)  
-     - +Y → right axis  
-     - +Z → upward (perpendicular to ground, right-handed system)  
-   - Depth maps give these values relative to the **top of the car**, with the camera centered along the vehicle width.  
-   - Example (Python):  
-     ```python
-     import numpy as np
-     xyz = np.load("xyz/frame_0001.npz")["points"]  # shape (H, W, 3)
-     u, v = 640, 360  # example pixel location
-     X, Y, Z = xyz[v, u]  # meters in camera coordinates; i.e. gets you absolute X,Y,Z from the center of the camera to the real world point represented by the pixel.
-     ```
+5. Converts the traffic light’s relative motion into ego-vehicle trajectory.
+   - The car is considered to be at the camera origin.
+   - The traffic light is used as the world reference point.
+   - The script rotates the coordinate system so that the first valid frame aligns the line from the car to the traffic light with the +X axis.
+   - This produces BEV coordinates `x_m` and `y_m` representing the ego trajectory on the ground plane.
 
-3. **Trajectory Extraction (Ground Frame Definition)**  
-   - Define the **traffic light** as the reference world point.  
-   - World frame setup:  
-     - The **origin** is directly under the traffic light on the ground.  
-     - The **Z-axis** passes upward through the traffic light.  
-     - At t = 0, the line joining the car and the traffic light is aligned with the **+X axis**.  
-     - This defines a right-handed coordinate system with (X forward, Y left, Z up).  
-   - Use the apparent motion of the traffic light in the ego-camera frame to compute the ego-vehicle’s trajectory `(x_m, y_m)` projected onto the ground plane.  
+6. Saves the outputs:
+   - `trajectory.png`: static BEV trajectory plot
+   - `trajectory.mp4`: animated BEV trajectory video
 
-4. **Outputs**  
-   - `trajectory.png` (required): still plot of the ego-vehicle trajectory in BEV coordinates (X,Y plane; do not worry about the height in the final output) .  
-   - `trajectory.mp4` (optional): animated BEV trajectory video (trajectory is drawn on a plot as a function of time)  
+## Repository structure
 
-#### Here is a sample output for your reference.
-
-<img src="sample_static_BEV_plot.png" width="500">
- 
-You dont have to make yours look similar as long as it is legible.
-#### Your output might not look as stable and that is OK. The trajectory can be a bunch of discrete points, you don't need a solid line.
----
-
-## Part B (Optional — Extra Credit)
-
-Enhance your BEV scene by including other objects:  
-- Golf cart (dynamic)  
-- Barrels (static)  
-- Other traffic lights or pedestrians (if visible)  
-
-Note: Do not worry about the length of the objects, just plot the centers of the regions visible in the BEV.
-
-**Expectations:**  
-- Track additional objects in RGB (any method: color thresholding, template matching, ML, etc.)  
-- Use depth/XYZ values to place them in the BEV  
-- Render them along with your ego trajectory  
-- Moving objects (golf cart, pedestrians) should update over time  
-- You could have the traffic light color in the BEV video.
-- Creativity is encouraged — richer BEVs score higher
-- This optional part's BEV can be in car frame making your life a bit easy.   
-
-
- Sample Ground-Frame Animation                          |   Sample Ego-Frame Animation
-:-------------------------:|:-------------------------:
-<img src="sample_animated_BEV_groundFrame.gif" width="450"> | <img src="sample_animated_BEV_egoFrame.gif" width="450">
-
----
-
-## Dataset Structure
-
-```
-dataset/
-│
-├── rgb/ # Left camera RGB images
-│ ├── frame_0001.png # (H, W, 3), uint8
-│ ├── frame_0002.png
-│ └── ...
-│
-├── xyz/ # Depth-based 3D point clouds
-│ ├── frame_0001.npz # Contains key "points" → (H, W, 3), float32 in meters
-│ ├── frame_0002.npz
-│ └── ...
-│
-└── bboxes_light.csv # Traffic light bounding box per frame
- # Columns: frame_id,x_min,y_min,x_max,y_max
-
+```text
+.
+├── main.py
+├── README.md
+├── dataset/
+│   ├── rgb/
+│   ├── xyz/
+│   └── bbox_light.csv
+├── trajectory.png
+├── trajectory.mp4
+└── ...
 ```
 
-### <u>Download the [DATASET](https://drive.google.com/drive/folders/1wkmImXqQL9wCURVyenqh8MGGuM2N2m8u?usp=drive_link)</u>
+## Key implementation details
 
-**Notes on data:**  
-- Image size: 1920 × 1200 pixels (RGB).  
-- Point cloud `.npz` files correspond 1:1 with RGB frames.  
-- Depth may have noise or invalid values (0/NaN) — handle gracefully.  
+The code is designed around a straightforward geometry-based solution rather than a learned model:
 
----
+- `load_bboxes()`: reads and validates the detection CSV.
+- `bbox_center()`: computes the box center.
+- `patch_mean_xyz()`: averages valid 3D points around the traffic-light center, reducing noise.
+- `traffic_light_xyz()`: maps each frame to a 3D traffic-light point in camera coordinates.
+- `ego_trajectory()`: transforms those camera-frame positions into a ground-centered BEV trajectory.
+- `plot_trajectory()`: saves a static plot.
+- `animate_trajectory()`: saves an animation of the estimated motion over time.
 
-## Submission Requirements
+## Exact result produced by `main.py`
 
-1. `trajectory.png` (required)  
-2. `trajectory.mp4` (required)  
-3.  Your Code
-4.  Any extra plots, overlays, or videos
-5. `README.md` (max 1 page):  
-   - Describe your method, assumptions, and results
+Running:
 
-Please create a <u>PUBLIC</u> GitHub repository and [submit](https://docs.google.com/forms/d/e/1FAIpQLSe55-Y66YOcldUcrppVq9P2DhvAHYgOKR8xSL_dUpPcKIOrZg/viewform?usp=sharing&ouid=113587858663372351737) your link to the application.
+```bash
+python main.py
+```
 
----
+will:
 
-## Evaluation Criteria 
+- load the traffic-light boxes,
+- estimate the 3D location of the traffic light in each frame,
+- derive the ego-vehicle’s motion relative to that light,
+- generate the visual outputs in the repository root.
 
-- Correctness → Is the ego trajectory reasonable in the defined ground frame?   
-- Clarity → Is your report correct or are your ideas right?  
-- Each criteria will be graded on a scale of 1-5.
+This is a classic geometry challenge solution: estimate the motion from the apparent motion of a static world reference point (the traffic light), then plot that motion in a bird’s-eye-view coordinate system.
 
-- Remember, it's OK to attempt it all and fail as long as you learn something and document it well you would have a good shot at it.
+## Setup
 
----
-##### [Interesting stuff from NVIDIA](https://build.nvidia.com/nvidia/bevformer) for the curious.
-<img src="bevformer.jpeg" width="500">
+Install the dependencies:
+
+```bash
+pip install numpy pandas matplotlib
+```
+
+Then place the dataset in the expected structure or ensure the CSV and `xyz` folder are in the project root. The script accepts both of these layouts:
+
+- `dataset/xyz/...` and `dataset/bbox_light.csv`
+- root-level `xyz/...` and `bbox_light.csv`
+
+## Outputs
+
+The solution generates:
+
+- `trajectory.png`: a BEV plot of the ego trajectory
+- `trajectory.mp4`: an animation of the trajectory over time
+
+These outputs are intended to communicate the estimated vehicle path in a ground-fixed frame, with the traffic light acting as the origin.
+
+## Summary
+
+This project is not a general perception system; it is a focused computer-vision / geometry task that estimates the car’s ego trajectory using the traffic light’s projected 3D position and a traffic-light-centered BEV transformation.
+
+The core idea is simple and robust:
+
+- traffic light = static reference point,
+- its movement across frames reveals the ego motion,
+- transform to a ground frame,
+- visualize the trajectory.
+
