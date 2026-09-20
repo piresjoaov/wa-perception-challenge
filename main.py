@@ -17,6 +17,13 @@ PNG_PATH = ROOT / "output" / "trajectory.png"
 MP4_PATH = ROOT / "output" / "trajectory.mp4"
 PATCH = 5  # 5x5 window around (u, v)
 FPS = 10
+# The world orientation is an arbitrary BEV gauge.  Averaging several early
+# bearings reduces the influence of a noisy first depth sample.
+ORIENTATION_SAMPLES = 5
+# Reject only large frame-to-frame 3-D jumps.  The threshold is data-adaptive
+# (median + MAD) with a generous absolute floor in metres/frame.
+OUTLIER_MAD_SCALE = 6.0
+MIN_OUTLIER_RATE_M_PER_FRAME = 0.75
 # Set this to the acquisition rate of the source sequence (not the MP4 FPS)
 # when it is known.  It is left unset to avoid reporting an invented speed.
 SOURCE_FPS: float | None = None
@@ -136,7 +143,12 @@ def detect_barrels_hsv(image: np.ndarray | None) -> list[tuple[float, float]]:
 
 
 def patch_mean_xyz(xyz: np.ndarray, u: float, v: float, size: int = PATCH) -> np.ndarray | None:
-    """Mean X,Y,Z in a size x size window around pixel (u, v)."""
+    """Robust mean XYZ in a size x size window around pixel (u, v).
+
+    Invalid points and samples whose forward range is a local MAD outlier are
+    discarded before taking the mean.  It keeps the requested 5x5 averaging
+    while avoiding boundary/background pixels corrupting the light depth.
+    """
     h, w, _ = xyz.shape
     ui = int(round(u))
     vi = int(round(v))
@@ -149,7 +161,14 @@ def patch_mean_xyz(xyz: np.ndarray, u: float, v: float, size: int = PATCH) -> np
     finite &= patch[:, 0] > 0
     if not np.any(finite):
         return None
-    return patch[finite].mean(axis=0)
+    valid = patch[finite]
+    median_x = np.median(valid[:, 0])
+    mad_x = np.median(np.abs(valid[:, 0] - median_x))
+    tolerance = max(0.05, 3.0 * 1.4826 * mad_x)
+    inlier = np.abs(valid[:, 0] - median_x) <= tolerance
+    if not np.any(inlier):
+        return None
+    return valid[inlier].mean(axis=0)
 
 
 def traffic_light_xyz(df: pd.DataFrame) -> pd.DataFrame:
@@ -182,9 +201,44 @@ def traffic_light_xyz(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def reject_motion_outliers(tl: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Remove isolated, physically implausible 3-D light-measurement jumps.
+
+    The traffic light is static, so abrupt changes in its camera-relative
+    position are caused by depth/detection noise rather than object motion.
+    The test uses displacement per elapsed frame, which remains valid when
+    CSV frame IDs have gaps.
+    """
+    if len(tl) < 4:
+        return tl.copy(), 0
+
+    xy = tl[["X", "Y"]].to_numpy(dtype=float)
+    frame_gaps = np.diff(tl["frame"].to_numpy(dtype=float))
+    displacement = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    rates = displacement / np.maximum(frame_gaps, 1.0)
+    median_rate = float(np.median(rates))
+    mad_rate = float(np.median(np.abs(rates - median_rate)))
+    threshold = max(
+        MIN_OUTLIER_RATE_M_PER_FRAME,
+        median_rate + OUTLIER_MAD_SCALE * 1.4826 * mad_rate,
+    )
+    keep = np.ones(len(tl), dtype=bool)
+    # A spike makes the observation disagree with a neighbour.  Mark the
+    # second sample of a large jump, except when the next jump confirms it.
+    for index, rate in enumerate(rates, start=1):
+        if rate > threshold:
+            next_rate = rates[index] if index < len(rates) else 0.0
+            if next_rate <= threshold:
+                keep[index] = False
+    filtered = tl.loc[keep].reset_index(drop=True)
+    return filtered, int((~keep).sum())
+
+
 def world_rotation(tl: pd.DataFrame) -> tuple[float, float]:
-    """Return the fixed 2-D rotation used by the traffic-light BEV frame."""
-    theta = np.arctan2(tl["Y"].iloc[0], tl["X"].iloc[0])
+    """Return the fixed BEV rotation estimated from early valid observations."""
+    initial = tl.iloc[:ORIENTATION_SAMPLES]
+    angles = np.arctan2(initial["Y"].to_numpy(), initial["X"].to_numpy())
+    theta = np.arctan2(np.sin(angles).mean(), np.cos(angles).mean())
     return float(np.cos(theta)), float(np.sin(theta))
 
 
@@ -268,6 +322,8 @@ def barrels_to_world(traj: pd.DataFrame) -> pd.DataFrame:
 def trajectory_metrics(
     traj: pd.DataFrame,
     total_frames: int,
+    raw_depth_valid_frames: int | None = None,
+    rejected_outliers: int = 0,
     source_fps: float | None = SOURCE_FPS,
 ) -> dict[str, float | int | None]:
     """Return reproducible validation statistics for valid trajectory samples."""
@@ -279,6 +335,8 @@ def trajectory_metrics(
         "valid_frames": valid_frames,
         "total_frames": total_frames,
         "valid_percent": 100.0 * valid_frames / total_frames if total_frames else 0.0,
+        "raw_depth_valid_frames": raw_depth_valid_frames if raw_depth_valid_frames is not None else valid_frames,
+        "rejected_outliers": rejected_outliers,
         "total_distance_m": total_distance,
         "mean_step_m": float(step_distances.mean()) if len(step_distances) else 0.0,
         "max_step_m": float(step_distances.max()) if len(step_distances) else 0.0,
@@ -432,15 +490,23 @@ def animate_trajectory(
 
 def main() -> None:
     bboxes = load_bboxes(CSV_PATH)
-    tl = traffic_light_xyz(bboxes)
+    raw_tl = traffic_light_xyz(bboxes)
+    tl, rejected_outliers = reject_motion_outliers(raw_tl)
     traj = ego_trajectory(tl)
     barrels = barrels_to_world(traj)
     limits = plot_trajectory(traj, PNG_PATH, barrels)
     animate_trajectory(traj, MP4_PATH, limits, barrels)
-    metrics = trajectory_metrics(traj, total_frames=len(bboxes))
+    metrics = trajectory_metrics(
+        traj,
+        total_frames=len(bboxes),
+        raw_depth_valid_frames=len(raw_tl),
+        rejected_outliers=rejected_outliers,
+    )
     print("\nTrajectory validation metrics")
     print(f"Frames processed successfully: {metrics['valid_frames']} / {metrics['total_frames']} "
           f"({metrics['valid_percent']:.1f}%)")
+    print(f"Raw valid depth samples: {metrics['raw_depth_valid_frames']}")
+    print(f"Temporal outliers rejected: {metrics['rejected_outliers']}")
     print(f"Total distance travelled: {metrics['total_distance_m']:.2f} m")
     print(f"Mean valid-frame displacement: {metrics['mean_step_m']:.3f} m")
     print(f"Maximum valid-frame displacement: {metrics['max_step_m']:.3f} m")

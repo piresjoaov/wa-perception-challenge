@@ -22,12 +22,16 @@ The program in `main.py` implements the following workflow:
 
 4. Extracts the 3D position of the traffic light in camera coordinates.
    - It takes a small patch around the bounding-box center (default: 5x5 pixels).
-   - It removes invalid depth values and computes the mean valid 3D point `(X, Y, Z)` in camera space.
+   - It removes invalid depth values and locally inconsistent forward-range samples before computing a robust mean 3D point `(X, Y, Z)` in camera space.
 
-5. Converts the traffic light’s relative motion into ego-vehicle trajectory.
+5. Performs a conservative temporal consistency check.
+   - Since the traffic light is static, isolated large camera-relative 3D jumps are treated as depth/detection outliers.
+   - The threshold is adaptive (median displacement rate plus a MAD-based tolerance) and accounts for gaps in frame IDs.
+
+6. Converts the traffic light’s relative motion into ego-vehicle trajectory.
    - The car is considered to be at the camera origin.
    - The traffic light is used as the world reference point.
-   - The script rotates the coordinate system so that the first valid frame aligns the line from the car to the traffic light with the +X axis.
+   - The script rotates the coordinate system so that the mean bearing of the first few valid frames aligns the line from the car to the traffic light with the +X axis. This is a repeatable choice of BEV-axis orientation, not an external pose calibration.
    - This produces BEV coordinates `x_m` and `y_m` representing the ego trajectory on the ground plane.
 
 6. Saves the outputs:
@@ -105,6 +109,7 @@ These outputs are intended to communicate the estimated vehicle path in a ground
 At the end of every `main.py` execution, the program reports reproducible trajectory metrics calculated only from frames that have a valid traffic-light box, matching `.npz` file, and finite 5x5 XYZ depth sample:
 
 - **Frames processed successfully:** `valid_frames / total_csv_frames` and percentage. This is a data-availability and depth-validity measure; it does not claim that excluded frames were necessarily visually noisy.
+- **Raw valid depth samples / temporal outliers rejected:** reports the effect of the consistency gate explicitly instead of silently changing the trajectory.
 - **Total distance travelled (m):** sum of Euclidean distances between consecutive valid BEV positions.
 - **Mean / maximum valid-frame displacement (m):** descriptive checks that help identify discontinuities or outlier depth estimates.
 - **Mean speed (m/s):** calculated only when the actual camera acquisition rate is supplied in `SOURCE_FPS`. The 10 FPS used to encode `trajectory.mp4` is deliberately not used as a camera rate, since it is a visualization setting rather than sensor metadata.
@@ -113,6 +118,8 @@ For the dataset currently included in this repository, the trajectory computatio
 
 ```text
 Frames processed successfully: 125 / 299 (41.8%)
+Raw valid depth samples: 125
+Temporal outliers rejected: 0
 Total distance travelled: 22.21 m
 Mean valid-frame displacement: 0.179 m
 Maximum valid-frame displacement: 1.242 m
