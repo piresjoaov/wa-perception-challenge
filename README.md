@@ -83,7 +83,7 @@ This is a classic geometry challenge solution: estimate the motion from the appa
 Install the dependencies:
 
 ```bash
-pip install numpy pandas matplotlib
+pip install numpy pandas matplotlib opencv-python
 ```
 
 Then place the dataset in the expected structure or ensure the CSV and `xyz` folder are in the project root. The script accepts both of these layouts:
@@ -100,6 +100,31 @@ The solution generates:
 
 These outputs are intended to communicate the estimated vehicle path in a ground-fixed frame, with the traffic light acting as the origin.
 
+## Quantitative validation metrics
+
+At the end of every `main.py` execution, the program reports reproducible trajectory metrics calculated only from frames that have a valid traffic-light box, matching `.npz` file, and finite 5x5 XYZ depth sample:
+
+- **Frames processed successfully:** `valid_frames / total_csv_frames` and percentage. This is a data-availability and depth-validity measure; it does not claim that excluded frames were necessarily visually noisy.
+- **Total distance travelled (m):** sum of Euclidean distances between consecutive valid BEV positions.
+- **Mean / maximum valid-frame displacement (m):** descriptive checks that help identify discontinuities or outlier depth estimates.
+- **Mean speed (m/s):** calculated only when the actual camera acquisition rate is supplied in `SOURCE_FPS`. The 10 FPS used to encode `trajectory.mp4` is deliberately not used as a camera rate, since it is a visualization setting rather than sensor metadata.
+
+For the dataset currently included in this repository, the trajectory computation produced:
+
+```text
+Frames processed successfully: 125 / 299 (41.8%)
+Total distance travelled: 22.21 m
+Mean valid-frame displacement: 0.179 m
+Maximum valid-frame displacement: 1.242 m
+Mean speed: not calculated (set SOURCE_FPS to the camera acquisition rate)
+```
+
+To report estimated speed, set `SOURCE_FPS` near the constants at the top of `main.py` to the documented capture frequency of the source sequence. For example, `SOURCE_FPS = 10.0` would treat adjacent frame IDs as 0.1 seconds apart.
+
+## Code organization
+
+Keeping this challenge in `main.py` is appropriate: it is a small, linear pipeline and its geometry remains easy to audit in one file. If the project grows, split it by stable responsibilities rather than prematurely: `io.py` for dataset loading, `geometry.py` for BEV transforms and metrics, `barrels.py` for OpenCV detection, and `visualization.py` for plots/animation. Add tests for `patch_mean_xyz`, `camera_point_to_world_xy`, and `trajectory_metrics` at the same time.
+
 ## Summary
 
 This project is not a general perception system; it is a focused computer-vision / geometry task that estimates the car’s ego trajectory using the traffic light’s projected 3D position and a traffic-light-centered BEV transformation.
@@ -110,4 +135,3 @@ The core idea is simple and robust:
 - its movement across frames reveals the ego motion,
 - transform to a ground frame,
 - visualize the trajectory.
-
