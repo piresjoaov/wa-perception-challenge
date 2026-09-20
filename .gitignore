@@ -1,0 +1,27 @@
+# Python environments and cache
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Dataset and massive files
+dataset/
+dataset-*.zip
+*.npz
+
+# Utility scripts and debug files
+fast_extractor.py
+_*.png
+*_debug.png
+_dbg_*.png
+
+# Output folder (Ignores everything inside, EXCEPT the required submission files)
+output/*
+!output/trajectory.png
+!output/trajectory.mp4
+
+# OS generated files
+.DS_Store
+Thumbs.db
